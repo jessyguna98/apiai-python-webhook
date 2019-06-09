@@ -1,67 +1,165 @@
-#!/usr/bin/env python
-
+import urllib
 import json
-from flask import Flask, request, make_response, jsonify
+import os
+
+from flask import Flask
+from flask import request
+from flask import make_response
 
 # Flask app should start in global layout
 app = Flask(__name__)
-log = app.logger
 
 
-@app.route('/', methods=['POST'])
+@app.route('/webhook', methods=['POST'])
 def webhook():
-    """This method handles the http requests for the Dialogflow webhook
-    This is meant to be used in conjunction with the weather Dialogflow agent
-    """
     req = request.get_json(silent=True, force=True)
-    try:
-        action = req.get('queryResult').get('action')
-    except AttributeError:
-        return 'json error'
 
-    #res = "Hurray!"
+    print("Request:")
+    print(json.dumps(req, indent=4))
 
-    if action == 'migration':
-        res = is_valid_doctor(req)
-    else:
-        log.error('Unexpected action.')
+    res = processRequest(req)
 
-    print('Action: ' + action)
-    print('Response: ' + res)
+    res = json.dumps(res, indent=4)
+    # print(res)
+    r = make_response(res)
+    r.headers['Content-Type'] = 'application/json'
+    return r
 
-    return make_response(jsonify({'fulfillmentText': res}))
 
-def is_valid_doctor(req):
-    """Returns a string containing text with a response to the user
-    with the weather forecast or a prompt for more information
-    Takes the city for the forecast and (optional) dates
-    uses the template responses found in weather_responses.py as templates
-    """
+def processRequest(req):
+    print ("started processing")
+    if req.get("result").get("action") != "migration":
+        return {}
+    baseurl = "https://query.yahooapis.com/v1/public/yql?"
+    yql_query = makeYqlQuery(req)
+    print ("yql query created")
+    if yql_query is None:
+        print("yqlquery is empty")
+        return {}
+    yql_url = baseurl + urllib.urlencode({'q': yql_query}) + "&format=json"
+    print(yql_url)
 
-    """date = req['queryResult']['parameters']['date']
-    date = date[:10]
-    doctor_name = req['queryResult']['parameters']['doctor_name']
-    doctor_name = ''.join(doctor_name)
-    doctor_name = doctor_name.strip().title()
-    conn = psycopg2.connect(database = "db0ntdu7buk51i", user = "tibwcqkplwckqf", password = "9cfed858b1d9206afb594c1c5cfacc5952b2fc21d440501daa3af5efd694313c", host = "ec2-107-20-249-68.compute-1.amazonaws.com", port = "5432")
-    cur = conn.cursor()
-    cur2 = conn.cursor()
-    response = "Results: \n"
-    cur.execute("SELECT doc_name from doc_list where doc_name ='"+ doctor_name+"'")
-    rows = cur.fetchall()
-    if len(rows) ==1:
-        cur2.execute("INSERT INTO Appointments values('"+doctor_name+"', '"+date+"')")
-        response = "Successfully booked an appointment with Dr. " +doctor_name+ " on " +date
-    elif len(rows)>1:
-        for row in rows:
-            response = response + row[0] + "\n"
-    else:
-        response = "Sorry! I couldn't find any doctor with that name."
-    conn.close()"""
-    response="connected"
+    result = urllib.urlopen(yql_url).read()
+    print("yql result: ")
+    print(result)
 
-    return response
+    data = json.loads(result)
+    res = makeWebhookResult(data)
+    return res
+
+
+def makeYqlQuery(req):
+    result = req.get("result")
+    parameters = result.get("parameters")
+    city = parameters.get("geo-city")
+    if city is None:
+        return None
+
+    return "select * from weather.forecast where woeid in (select woeid from geo.places(1) where text='" + city + "')"
+
+
+def makeWebhookResult(data):
+    query = data.get('query')
+    if query is None:
+        return {}
+
+    result = query.get('results')
+    if result is None:
+        return {}
+
+    channel = result.get('channel')
+    if channel is None:
+        return {}
+
+    item = channel.get('item')
+    location = channel.get('location')
+    units = channel.get('units')
+    if (location is None) or (item is None) or (units is None):
+        return {}
+
+    condition = item.get('condition')
+    if condition is None:
+        return {}
+
+    # print(json.dumps(item, indent=4))
+
+    speech = "Today in " + location.get('city') + ": " + condition.get('text') + \
+             ", the temperature is " + condition.get('temp') + " " + units.get('temperature')
+
+    print("Response:")
+    print(speech)
+
+    slack_message = {
+        "text": speech,
+        "attachments": [
+            {
+                "title": channel.get('title'),
+                "title_link": channel.get('link'),
+                "color": "#36a64f",
+
+                "fields": [
+                    {
+                        "title": "Condition",
+                        "value": "Temp " + condition.get('temp') +
+                                 " " + units.get('temperature'),
+                        "short": "false"
+                    },
+                    {
+                        "title": "Wind",
+                        "value": "Speed: " + channel.get('wind').get('speed') +
+                                 ", direction: " + channel.get('wind').get('direction'),
+                        "short": "true"
+                    },
+                    {
+                        "title": "Atmosphere",
+                        "value": "Humidity " + channel.get('atmosphere').get('humidity') +
+                                 " pressure " + channel.get('atmosphere').get('pressure'),
+                        "short": "true"
+                    }
+                ],
+
+                "thumb_url": "http://l.yimg.com/a/i/us/we/52/" + condition.get('code') + ".gif"
+            }
+        ]
+    }
+
+    facebook_message = {
+        "attachment": {
+            "type": "template",
+            "payload": {
+                "template_type": "generic",
+                "elements": [
+                    {
+                        "title": channel.get('title'),
+                        "image_url": "http://l.yimg.com/a/i/us/we/52/" + condition.get('code') + ".gif",
+                        "subtitle": speech,
+                        "buttons": [
+                            {
+                                "type": "web_url",
+                                "url": channel.get('link'),
+                                "title": "View Details"
+                            }
+                        ]
+                    }
+                ]
+            }
+        }
+    }
+
+    print(json.dumps(slack_message))
+
+    return {
+        "speech": speech,
+        "displayText": speech,
+        "data": {"slack": slack_message, "facebook": facebook_message},
+        # "contextOut": [],
+        "source": "apiai-weather-webhook-sample"
+    }
 
 
 if __name__ == '__main__':
-    app.run(debug=True, host='0.0.0.0')
+    port = int(os.getenv('PORT', 5000))
+
+    print ("Starting app on port %d" % port)
+
+    app.run(debug=False, port=port, host='0.0.0.0')
