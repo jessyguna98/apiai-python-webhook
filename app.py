@@ -20,7 +20,7 @@ def webhook():
     res = processRequest(req)
 
     res = json.dumps(res, indent=4)
-    # print(res)
+    print(res)
     r = make_response(res)
     r.headers['Content-Type'] = 'application/json'
     return r
@@ -30,7 +30,8 @@ def processRequest(req):
     print ("started processing")
     if req.get("result").get("action") != "migration":
         return {}
-    baseurl = "https://query.yahooapis.com/v1/public/yql?"
+    return "connected"
+    """baseurl = "https://query.yahooapis.com/v1/public/yql?"
     yql_query = makeYqlQuery(req)
     print ("yql query created")
     if yql_query is None:
@@ -154,7 +155,7 @@ def makeWebhookResult(data):
         "data": {"slack": slack_message, "facebook": facebook_message},
         # "contextOut": [],
         "source": "apiai-weather-webhook-sample"
-    }
+    }""""
 
 
 if __name__ == '__main__':
